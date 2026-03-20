@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>渋滞ものさし</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        #map {
+            height: 100%;
+            width: 100%;
+            cursor: default !important;
+        }
+
+        .leaflet-grab {
+            cursor: default !important;
+        }
+
+        .leaflet-dragging .leaflet-grab {
+            cursor: grabbing !important;
+        }
+
+        .distance-label {
+            font-size: 14px;
+            font-weight: bold;
+            color: #333;
+            white-space: nowrap;
+            text-shadow:
+                -1px -1px 0 #fff,
+                1px -1px 0 #fff,
+                -1px 1px 0 #fff,
+                1px 1px 0 #fff,
+                0 -2px 0 #fff,
+                0 2px 0 #fff,
+                -2px 0 0 #fff,
+                2px 0 0 #fff;
+            pointer-events: none;
+            text-align: center;
+        }
+
+        /* A4 レイアウト表示用のスタイル */
+        .layout-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #222; /* 背景をさらに暗く */
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        .map-wrapper {
+            position: relative;
+            background: #fff;
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            transition: width 0.3s ease, height 0.3s ease;
+        }
+
+        .map-wrapper.full {
+            width: 100vw;
+            height: 100vh;
+            box-shadow: none;
+        }
+
+        .map-wrapper.a4-portrait {
+            width: min(96vw, calc(96vh * 210 / 297));
+            height: min(96vh, calc(96vw * 297 / 210));
+        }
+
+        .map-wrapper.a4-landscape {
+            width: min(96vw, calc(96vh * 297 / 210));
+            height: min(96vh, calc(96vw * 210 / 297));
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+            cursor: default !important;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100">
+    <div id="root"></div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Turf.js -->
+    <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+    <!-- Google Maps API (Placeholder - APIキーを入れてください) -->
+    <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_API_KEY"></script>
+    <!-- Leaflet.GoogleMutant -->
+    <script src="https://unpkg.com/leaflet.gridlayer.googlemutant@latest/dist/Leaflet.GoogleMutant.js"></script>
+
+    <!-- React & ReactDOM (Global via CDN) -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+        const { createRoot } = ReactDOM;
+
+        const App = () => {
+            const mapRef = useRef(null);
+            const [map, setMap] = useState(null);
+            const [points, setPoints] = useState([]); // 緯度経度の配列 [[lat, lng], ...]
+            const [interval, setIntervalValue] = useState(10); // メートル
+            const [baseLayer, setBaseLayer] = useState('gsi_std');
+            const [fontSize, setFontSize] = useState(14); // ラベル文字サイズ (px)
+            const [panelOpen, setPanelOpen] = useState(true); // パネル表示状態
+            const [searchQuery, setSearchQuery] = useState(''); // 検索クエリ
+            const [searchResults, setSearchResults] = useState([]); // 検索結果
+            const [isSearching, setIsSearching] = useState(false); // 検索中フラグ
+            const [notification, setNotification] = useState(null); // 通知メッセージ
+            const [layoutMode, setLayoutMode] = useState('full'); // 'full', 'a4-portrait', 'a4-landscape'
+
+            // 地図レイヤーの定義
+            const layers = useMemo(() => ({
+                osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; OpenStreetMap contributors'
+                }),
+                gsi_std: L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
+                    attribution: '&copy; 国土地理院',
+                    maxNativeZoom: 18,
+                    maxZoom: 21
+                }),
+                gsi_photo: L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
+                    attribution: '&copy; 国土地理院',
+                    maxNativeZoom: 18,
+                    maxZoom: 21
+                }),
+                gsi_pale: L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', {
+                    attribution: '&copy; 国土地理院',
+                    maxNativeZoom: 18,
+                    maxZoom: 21
+                }),
+                google_roadmap: L.gridLayer.googleMutant({ type: 'roadmap', maxZoom: 21 }),
+                google_satellite: L.gridLayer.googleMutant({ type: 'satellite', maxZoom: 21 })
+            }), []);
+
+            // 地図の初期化
+            useEffect(() => {
+                const initialMap = L.map('map', {
+                    center: [35.681236, 139.767125], // 東京駅
+                    zoom: 15,
+                    maxZoom: 21,
+                    zoomSnap: 0.5,
+                    zoomDelta: 0.5,
+                    wheelPxPerZoomLevel: 120,
+                    layers: [layers.gsi_std]
+                });
+                setMap(initialMap);
+
+                initialMap.on('click', (e) => {
+                    setPoints(prev => [...prev, [e.latlng.lat, e.latlng.lng]]);
+                });
+
+                return () => initialMap.remove();
+            }, [layers]);
+
+            // レイヤーの切り替え
+            useEffect(() => {
+                if (!map) return;
+                Object.values(layers).forEach(layer => map.removeLayer(layer));
+                map.addLayer(layers[baseLayer]);
+            }, [map, baseLayer, layers]);
+
+            // 描画物（パス、マーカー、ラベル）の管理
+            const layersGroupRef = useRef(L.layerGroup());
+            const nodeMarkersRef = useRef([]); // 白丸マーカーを別管理
+            useEffect(() => {
+                if (!map) return;
+                layersGroupRef.current.addTo(map);
+
+                // レイアウト変更時にサイズを再計算
+                const timer = setTimeout(() => {
+                    if (map) {
+                        map.invalidateSize({ animate: false });
+                    }
+                }, 400); // 遷移アニメーション (0.3s) の終了後に実行
+                return () => clearTimeout(timer);
+            }, [map, layoutMode]);
+
+            const measurement = useMemo(() => {
+                if (points.length === 0) return { totalDistance: 0, markerCount: 0 };
+
+                // 1点目のみの場合
+                if (points.length === 1) {
+                    return {
+                        totalDistance: 0,
+                        markers: [{ coords: points[0], type: 'node' }],
+                        labels: [],
+                        line: null
+                    };
+                }
+
+                // Turf.js で計測
+                const line = turf.lineString(points.map(p => [p[1], p[0]]));
+                const totalDistanceKm = turf.length(line, { units: 'kilometers' });
+                const totalDistanceM = totalDistanceKm * 1000;
+
+                const markers = [];
+                const labels = [];
+
+                // 開始点
+                markers.push(points[0]);
+
+                // 間隔ごとのポイント計算
+                let currentPos = 0;
+                while (currentPos + interval <= totalDistanceM) {
+                    const prevPos = currentPos;
+                    currentPos += interval;
+                    const point = turf.along(line, currentPos / 1000, { units: 'kilometers' });
+                    const coords = [point.geometry.coordinates[1], point.geometry.coordinates[0]];
+
+                    // 角度の計算（ラベル回転および目盛り回転用）
+                    const prevPoint = turf.along(line, prevPos / 1000, { units: 'kilometers' });
+                    const bearing = turf.bearing(prevPoint, point);
+                    let rotation = bearing + 90;
+                    if (rotation > 90 && rotation < 270) rotation += 180;
+
+                    const roundedPos = Math.round(currentPos);
+                    let type = 'normal';
+                    if (roundedPos % 100 === 0) type = '100m';
+                    else if (roundedPos % 50 === 0) type = '50m';
+
+                    markers.push({ coords, rotation, bearing, type });
+
+                    // 100mラベル（ラインの横にオフセット配置）
+                    if (type === '100m' || (currentPos % 100 < interval && currentPos > 90)) {
+                        const roundedDist = Math.round(currentPos / 100) * 100;
+                        if (roundedDist > 0 && !labels.find(l => l.dist === roundedDist)) {
+                            // ラインに対して垂直方向にオフセットした位置にラベルを配置
+                            const offsetDist = 0.008; // km (ラインからの距離)
+                            const offsetAngle = bearing + 90; // 垂直方向
+                            const centerPt = turf.point([coords[1], coords[0]]);
+                            const labelPt = turf.destination(centerPt, offsetDist, offsetAngle, { units: 'kilometers' });
+                            const labelCoords = [labelPt.geometry.coordinates[1], labelPt.geometry.coordinates[0]];
+                            labels.push({ coords: labelCoords, dist: roundedDist, rotation });
+                        }
+                    }
+                }
+
+                return {
+                    totalDistance: totalDistanceM.toFixed(1),
+                    markers,
+                    labels,
+                    line
+                };
+            }, [points, interval]);
+
+            // 地図上の描画更新
+            useEffect(() => {
+                if (!map) return;
+                layersGroupRef.current.clearLayers();
+
+                if (points.length >= 2) {
+                    // 太めの黒実線
+                    L.polyline(points, { color: '#000', weight: 3, opacity: 0.9 }).addTo(layersGroupRef.current);
+                }
+
+                if (measurement.markers) {
+                    measurement.markers.forEach((m, idx) => {
+                        // 目盛り線（直交する短い線）を描画
+                        if (m.bearing !== undefined) {
+                            const angle = m.bearing + 90; // 直交方向
+                            let len = 0.001; // km (1m each side)
+                            let weight = 2;
+                            if (m.type === '100m') { len = 0.003; weight = 3; }
+                            else if (m.type === '50m') { len = 0.002; weight = 2.5; }
+
+                            const center = turf.point([m.coords[1], m.coords[0]]);
+                            const p1 = turf.destination(center, len, angle, { units: 'kilometers' });
+                            const p2 = turf.destination(center, len, angle + 180, { units: 'kilometers' });
+
+                            L.polyline([
+                                [p1.geometry.coordinates[1], p1.geometry.coordinates[0]],
+                                [p2.geometry.coordinates[1], p2.geometry.coordinates[0]]
+                            ], { color: '#000', weight: weight, opacity: 1 }).addTo(layersGroupRef.current);
+                        }
+                    });
+                }
+
+                // 起点・終点・クリック地点のマーカー（白丸）
+                nodeMarkersRef.current = [];
+                if (points.length > 0) {
+                    points.forEach((p, idx) => {
+                        const marker = L.circleMarker(p, {
+                            radius: 5,
+                            color: '#000',
+                            weight: 2,
+                            fillColor: 'white',
+                            fillOpacity: 1
+                        }).addTo(layersGroupRef.current);
+                        nodeMarkersRef.current.push(marker);
+                    });
+                }
+
+                if (measurement.labels) {
+                    measurement.labels.forEach(l => {
+                        const labelText = `${l.dist.toFixed(0)}m`;
+                        const estWidth = labelText.length * fontSize * 0.7;
+                        L.marker(l.coords, {
+                            icon: L.divIcon({
+                                className: 'custom-div-icon',
+                                html: `<div class="distance-label" style="font-size:${fontSize}px; transform: rotate(${l.rotation}deg)">${labelText}</div>`,
+                                iconSize: [estWidth, fontSize + 4],
+                                iconAnchor: [estWidth / 2, (fontSize + 4) / 2]
+                            })
+                        }).addTo(layersGroupRef.current);
+                    });
+                }
+            }, [map, points, measurement, fontSize]);
+
+            const handleClear = () => {
+                setPoints([]);
+            };
+
+            // 場所検索（Nominatim API）
+            const handleSearch = async () => {
+                if (!searchQuery.trim()) return;
+                setIsSearching(true);
+                setSearchResults([]);
+                try {
+                    const res = await fetch(
+                        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=5&countrycodes=jp&accept-language=ja`
+                    );
+                    const data = await res.json();
+                    setSearchResults(data);
+                } catch (e) {
+                    console.error('検索エラー:', e);
+                } finally {
+                    setIsSearching(false);
+                }
+            };
+
+            const handleSelectResult = (result) => {
+                if (map) {
+                    map.setView([parseFloat(result.lat), parseFloat(result.lon)], 16);
+                }
+                setSearchResults([]);
+                setSearchQuery(result.display_name.split(',')[0]);
+            };
+
+            // スクリーンショット保存
+            const handleScreenshot = async () => {
+                if (!map) return;
+
+                // 1. 白丸マーカーを非表示
+                nodeMarkersRef.current.forEach(m => m.setStyle({ opacity: 0, fillOpacity: 0 }));
+                await new Promise(r => setTimeout(r, 100));
+
+                // 2. ファイル名用の住所を取得
+                let addressStr = '地図';
+                if (points.length > 0) {
+                    try {
+                        const res = await fetch(
+                            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${points[0][0]}&lon=${points[0][1]}&zoom=18&accept-language=ja`
+                        );
+                        const data = await res.json();
+                        if (data.display_name) {
+                            const parts = data.display_name.split(',').map(s => s.trim()).slice(0, 3);
+                            addressStr = parts.join('_');
+                        }
+                    } catch (e) {
+                        console.error('住所取得エラー:', e);
+                    }
+                }
+
+                // 3. 日付時刻
+                const now = new Date();
+                const dateStr = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
+
+                try {
+                    const mapContainer = map.getContainer();
+                    const mapRect = mapContainer.getBoundingClientRect();
+                    const canvas = document.createElement('canvas');
+                    canvas.width = mapRect.width;
+                    canvas.height = mapRect.height;
+                    const ctx = canvas.getContext('2d');
+
+                    // 4. タイルを描画
+                    const tiles = mapContainer.querySelectorAll('.leaflet-tile-loaded');
+                    const tilePromises = [];
+                    tiles.forEach(tile => {
+                        const tileRect = tile.getBoundingClientRect();
+                        const x = Math.round(tileRect.left - mapRect.left);
+                        const y = Math.round(tileRect.top - mapRect.top);
+                        const w = Math.round(tileRect.width);
+                        const h = Math.round(tileRect.height);
+                        // CORS対応: タイルを再読み込みしてcanvasに描画
+                        const p = new Promise(resolve => {
+                            const img = new Image();
+                            img.crossOrigin = 'anonymous';
+                            img.onload = () => {
+                                ctx.drawImage(img, x, y, w, h);
+                                resolve();
+                            };
+                            img.onerror = () => {
+                                // CORS失敗時は直接描画を試みる
+                                try { ctx.drawImage(tile, x, y, w, h); } catch(e) {}
+                                resolve();
+                            };
+                            img.src = tile.src;
+                        });
+                        tilePromises.push(p);
+                    });
+                    await Promise.all(tilePromises);
+
+                    // 5. ライン（黒実線）を描画
+                    if (points.length >= 2) {
+                        ctx.beginPath();
+                        ctx.strokeStyle = '#000';
+                        ctx.lineWidth = 3;
+                        ctx.globalAlpha = 0.9;
+                        points.forEach((p, i) => {
+                            const px = map.latLngToContainerPoint(p);
+                            if (i === 0) ctx.moveTo(px.x, px.y);
+                            else ctx.lineTo(px.x, px.y);
+                        });
+                        ctx.stroke();
+                        ctx.globalAlpha = 1;
+                    }
+
+                    // 6. 目盛り線を描画
+                    if (measurement.markers) {
+                        measurement.markers.forEach(m => {
+                            if (m.bearing !== undefined) {
+                                const angle = m.bearing + 90;
+                                let len = 0.001;
+                                let weight = 2;
+                                if (m.type === '100m') { len = 0.003; weight = 3; }
+                                else if (m.type === '50m') { len = 0.002; weight = 2.5; }
+
+                                const center = turf.point([m.coords[1], m.coords[0]]);
+                                const p1 = turf.destination(center, len, angle, { units: 'kilometers' });
+                                const p2 = turf.destination(center, len, angle + 180, { units: 'kilometers' });
+
+                                const px1 = map.latLngToContainerPoint([p1.geometry.coordinates[1], p1.geometry.coordinates[0]]);
+                                const px2 = map.latLngToContainerPoint([p2.geometry.coordinates[1], p2.geometry.coordinates[0]]);
+
+                                ctx.beginPath();
+                                ctx.strokeStyle = '#000';
+                                ctx.lineWidth = weight;
+                                ctx.moveTo(px1.x, px1.y);
+                                ctx.lineTo(px2.x, px2.y);
+                                ctx.stroke();
+                            }
+                        });
+                    }
+
+                    // 7. 距離ラベルを描画
+                    if (measurement.labels) {
+                        measurement.labels.forEach(l => {
+                            const px = map.latLngToContainerPoint(l.coords);
+                            const text = `${l.dist.toFixed(0)}m`;
+                            ctx.save();
+                            ctx.translate(px.x, px.y);
+                            ctx.rotate((l.rotation || 0) * Math.PI / 180);
+                            ctx.font = `bold ${fontSize}px sans-serif`;
+                            ctx.textAlign = 'center';
+                            ctx.textBaseline = 'middle';
+                            // 白い縁取り
+                            ctx.strokeStyle = '#fff';
+                            ctx.lineWidth = 4;
+                            ctx.strokeText(text, 0, 0);
+                            // 文字
+                            ctx.fillStyle = '#333';
+                            ctx.fillText(text, 0, 0);
+                            ctx.restore();
+                        });
+                    }
+
+                    // 8. ダウンロード
+                    const safeName = addressStr.replace(/[\\/:*?"<>|]/g, '_').substring(0, 80);
+                    const link = document.createElement('a');
+                    link.download = `${safeName}_${dateStr}.png`;
+                    link.href = canvas.toDataURL('image/png');
+                    link.click();
+
+                    // 通知を表示
+                    setNotification({ type: 'success', message: `保存しました: ${safeName}_${dateStr}.png` });
+                    setTimeout(() => setNotification(null), 3000);
+                } catch (e) {
+                    console.error('スクリーンショットエラー:', e);
+                    setNotification({ type: 'error', message: '保存に失敗しました。' });
+                    setTimeout(() => setNotification(null), 3000);
+                }
+
+                // 9. 白丸を復元
+                nodeMarkersRef.current.forEach(m => m.setStyle({ opacity: 1, fillOpacity: 1 }));
+            };
+
+            return (
+                <div className="relative w-full h-screen overflow-hidden bg-gray-900">
+                    <div className="layout-container">
+                        <div className={`map-wrapper ${layoutMode}`}>
+                            <div id="map" className="z-0"></div>
+                        </div>
+                    </div>
+
+                    {/* トグルボタン（パネル非表示時） */}
+                    {!panelOpen && (
+                        <button
+                            onClick={() => setPanelOpen(true)}
+                            className="absolute top-4 right-4 z-[1000] bg-white/90 backdrop-blur-sm hover:bg-white p-3 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 group"
+                            title="設定を開く"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-gray-600 group-hover:text-blue-600 group-hover:rotate-90 transition-all duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                        </button>
+                    )}
+
+                    {/* スクリーンショットボタン */}
+                    <button
+                        id="screenshot-btn"
+                        onClick={handleScreenshot}
+                        className="absolute top-4 left-16 z-[1000] bg-white/90 backdrop-blur-sm hover:bg-white p-2.5 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 group"
+                        title="スクリーンショットを保存"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-600 group-hover:text-blue-600 transition-colors duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                    </button>
+
+                    {/* コントロールパネル */}
+                    {panelOpen && (
+                        <div className="absolute top-4 right-4 z-[1000] bg-white/95 backdrop-blur-sm p-4 rounded-xl shadow-lg w-72 transition-all duration-300 border border-gray-100">
+                            <div className="flex justify-between items-center mb-4 border-b pb-2">
+                                <h1 className="text-lg font-bold text-gray-800">設定</h1>
+                                <button
+                                    onClick={() => setPanelOpen(false)}
+                                    className="text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg p-1 transition-colors duration-200"
+                                    title="設定を閉じる"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+
+                            {/* 場所検索 */}
+                            <div className="space-y-4">
+                                <div className="relative">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">場所検索</label>
+                                    <div className="flex gap-1">
+                                        <input
+                                            type="text"
+                                            value={searchQuery}
+                                            onChange={(e) => setSearchQuery(e.target.value)}
+                                            onKeyDown={(e) => { if (e.key === 'Enter') handleSearch(); }}
+                                            placeholder="住所・地名を入力..."
+                                            className="flex-1 border border-gray-300 rounded-md shadow-sm p-2 text-sm focus:ring-blue-500 focus:border-blue-500"
+                                        />
+                                        <button
+                                            onClick={handleSearch}
+                                            disabled={isSearching}
+                                            className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white px-3 py-2 rounded-md text-sm transition-colors duration-200"
+                                        >
+                                            {isSearching ? (
+                                                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                                </svg>
+                                            ) : (
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                                </svg>
+                                            )}
+                                        </button>
+                                    </div>
+                                    {/* 検索結果ドロップダウン */}
+                                    {searchResults.length > 0 && (
+                                        <div className="absolute left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-48 overflow-y-auto z-[1001]">
+                                            {searchResults.map((r, i) => (
+                                                <button
+                                                    key={i}
+                                                    onClick={() => handleSelectResult(r)}
+                                                    className="w-full text-left px-3 py-2 text-xs hover:bg-blue-50 border-b border-gray-100 last:border-b-0 transition-colors"
+                                                >
+                                                    {r.display_name}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">地図切り替え</label>
+                                    <select
+                                        className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm p-2 bg-gray-50"
+                                        value={baseLayer}
+                                        onChange={(e) => setBaseLayer(e.target.value)}
+                                    >
+                                        <option value="osm">OpenStreetMap</option>
+                                        <option value="gsi_std">地理院地図 (標準)</option>
+                                        <option value="gsi_photo">地理院地図 (写真)</option>
+                                        <option value="gsi_pale">地理院地図 (淡色)</option>
+                                        <option value="google_roadmap">Google Maps (Roadmap)</option>
+                                        <option value="google_satellite">Google Maps (Satellite)</option>
+                                    </select>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div className="bg-blue-50 p-2 rounded text-center">
+                                        <div className="text-xs text-blue-600 font-bold">総距離</div>
+                                        <div className="text-xl font-mono text-blue-900">{measurement.totalDistance || 0}m</div>
+                                    </div>
+                                    <div className="bg-red-50 p-2 rounded text-center">
+                                        <div className="text-xs text-red-600 font-bold">目印数</div>
+                                        <div className="text-xl font-mono text-red-900">{(measurement.markers || []).length}</div>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 font-bold mb-1">目印の間隔 (m)</label>
+                                    <input
+                                        type="number"
+                                        value={interval}
+                                        onChange={(e) => setIntervalValue(Number(e.target.value))}
+                                        className="block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                                        min="1"
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 font-bold mb-1">文字サイズ (px)</label>
+                                    <input
+                                        type="number"
+                                        value={fontSize}
+                                        onChange={(e) => setFontSize(Number(e.target.value))}
+                                        className="block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                                        min="6"
+                                        max="30"
+                                    />
+                                </div>
+
+                                <button
+                                    onClick={handleClear}
+                                    className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded transition duration-200"
+                                >
+                                    パスをクリア
+                                </button>
+                            </div>
+
+                            <div className="mt-4">
+                                <label className="block text-sm font-medium text-gray-700 mb-1">画面比率 (A4)</label>
+                                <div className="grid grid-cols-3 gap-1">
+                                    <button
+                                        onClick={() => setLayoutMode('full')}
+                                        className={`py-1.5 px-2 text-xs rounded-md border transition-all ${layoutMode === 'full' ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-50 text-gray-700 border-gray-300 hover:bg-gray-100'}`}
+                                    >
+                                        全画面
+                                    </button>
+                                    <button
+                                        onClick={() => setLayoutMode('a4-portrait')}
+                                        className={`py-1.5 px-2 text-xs rounded-md border transition-all ${layoutMode === 'a4-portrait' ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-50 text-gray-700 border-gray-300 hover:bg-gray-100'}`}
+                                    >
+                                        A4縦
+                                    </button>
+                                    <button
+                                        onClick={() => setLayoutMode('a4-landscape')}
+                                        className={`py-1.5 px-2 text-xs rounded-md border transition-all ${layoutMode === 'a4-landscape' ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-50 text-gray-700 border-gray-300 hover:bg-gray-100'}`}
+                                    >
+                                        A4横
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="mt-4 text-[10px] text-gray-400 leading-tight">
+                                ※ 地図上をクリックしてパスを描画します。<br />
+                                ※ カメラアイコンから、計測地点の住所を含めたスクリーンショットを保存できます。<br />
+                                ※ Google Maps を利用するには index.html 内の API キー設定が必要です。
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 通知表示 */}
+                    {notification && (
+                        <div className={`absolute bottom-8 left-1/2 transform -translate-x-1/2 z-[2000] px-6 py-3 rounded-full shadow-2xl text-white font-bold transition-all duration-500 animate-bounce ${
+                            notification.type === 'success' ? 'bg-green-600/90' : 'bg-red-600/90'
+                        }`}>
+                            <div className="flex items-center gap-2">
+                                {notification.type === 'success' ? (
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                    </svg>
+                                ) : (
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                                    </svg>
+                                )}
+                                {notification.message}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const container = document.getElementById('root');
+        const root = createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
+
+</html>
