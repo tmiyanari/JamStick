@@ -47,7 +47,8 @@
             display: flex;
             justify-content: center;
             align-items: center;
-            background: #222; /* 背景をさらに暗く */
+            background: #222;
+            /* 背景をさらに暗く */
             overflow: hidden;
             width: 100vw;
             height: 100vh;
@@ -56,7 +57,7 @@
         .map-wrapper {
             position: relative;
             background: #fff;
-            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            box-shadow: 0 0 50px rgba(0, 0, 0, 0.5);
             transition: width 0.3s ease, height 0.3s ease;
         }
 
@@ -91,10 +92,6 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <!-- Turf.js -->
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
-    <!-- Google Maps API (Placeholder - APIキーを入れてください) -->
-    <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_GOOGLE_MAPS_API_KEY"></script>
-    <!-- Leaflet.GoogleMutant -->
-    <script src="https://unpkg.com/leaflet.gridlayer.googlemutant@latest/dist/Leaflet.GoogleMutant.js"></script>
 
     <!-- React & ReactDOM (Global via CDN) -->
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
@@ -106,70 +103,172 @@
         const { useState, useEffect, useRef, useMemo } = React;
         const { createRoot } = ReactDOM;
 
+        // LocalStorage Keys
+        const STORAGE_PREFIX = 'jamstick_';
+        const KEYS = {
+            CENTER: `${STORAGE_PREFIX}center`,
+            ZOOM: `${STORAGE_PREFIX}zoom`,
+            BASE_LAYER: `${STORAGE_PREFIX}base_layer`,
+            POINTS: `${STORAGE_PREFIX}points`,
+            INTERVAL: `${STORAGE_PREFIX}interval`,
+            FONT_SIZE: `${STORAGE_PREFIX}font_size`,
+            LAYOUT_MODE: `${STORAGE_PREFIX}layout_mode`,
+            PANEL_OPEN: `${STORAGE_PREFIX}panel_open`,
+        };
+
         const App = () => {
             const mapRef = useRef(null);
             const [map, setMap] = useState(null);
-            const [points, setPoints] = useState([]); // 緯度経度の配列 [[lat, lng], ...]
-            const [interval, setIntervalValue] = useState(10); // メートル
-            const [baseLayer, setBaseLayer] = useState('gsi_std');
-            const [fontSize, setFontSize] = useState(14); // ラベル文字サイズ (px)
-            const [panelOpen, setPanelOpen] = useState(true); // パネル表示状態
+
+            // 初期状態の読み込み
+            const getInitialState = (key, defaultValue) => {
+                const saved = localStorage.getItem(key);
+                try {
+                    return saved !== null ? JSON.parse(saved) : defaultValue;
+                } catch (e) {
+                    return defaultValue;
+                }
+            };
+
+            const [points, setPoints] = useState(() => getInitialState(KEYS.POINTS, []));
+            const [interval, setIntervalValue] = useState(() => getInitialState(KEYS.INTERVAL, 10));
+            const [baseLayer, setBaseLayer] = useState(() => {
+                const saved = localStorage.getItem(KEYS.BASE_LAYER);
+                return saved || 'gsi_std';
+            });
+            const [fontSize, setFontSize] = useState(() => getInitialState(KEYS.FONT_SIZE, 14));
+            const [panelOpen, setPanelOpen] = useState(() => getInitialState(KEYS.PANEL_OPEN, true));
+            const [layoutMode, setLayoutMode] = useState(() => {
+                const saved = localStorage.getItem(KEYS.LAYOUT_MODE);
+                return saved || 'full';
+            });
+
             const [searchQuery, setSearchQuery] = useState(''); // 検索クエリ
             const [searchResults, setSearchResults] = useState([]); // 検索結果
             const [isSearching, setIsSearching] = useState(false); // 検索中フラグ
             const [notification, setNotification] = useState(null); // 通知メッセージ
-            const [layoutMode, setLayoutMode] = useState('full'); // 'full', 'a4-portrait', 'a4-landscape'
 
             // 地図レイヤーの定義
-            const layers = useMemo(() => ({
-                osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '&copy; OpenStreetMap contributors'
-                }),
-                gsi_std: L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
-                    attribution: '&copy; 国土地理院',
-                    maxNativeZoom: 18,
-                    maxZoom: 21
-                }),
-                gsi_photo: L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
-                    attribution: '&copy; 国土地理院',
-                    maxNativeZoom: 18,
-                    maxZoom: 21
-                }),
-                gsi_pale: L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', {
-                    attribution: '&copy; 国土地理院',
-                    maxNativeZoom: 18,
-                    maxZoom: 21
-                }),
-                google_roadmap: L.gridLayer.googleMutant({ type: 'roadmap', maxZoom: 21 }),
-                google_satellite: L.gridLayer.googleMutant({ type: 'satellite', maxZoom: 21 })
-            }), []);
+            const layers = useMemo(() => {
+                const baseLayers = {
+                    osm: L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+                        attribution: '&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors &copy; <a href=\"https://carto.com/attributions\">CARTO</a>',
+                        subdomains: 'abcd',
+                        maxZoom: 20,
+                        crossOrigin: 'anonymous'
+                    }),
+                    gsi_std: L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
+                        attribution: '&copy; 国土地理院',
+                        maxNativeZoom: 18,
+                        maxZoom: 21,
+                        crossOrigin: 'anonymous'
+                    }),
+                    gsi_photo: L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
+                        attribution: '&copy; 国土地理院',
+                        maxNativeZoom: 18,
+                        maxZoom: 21,
+                        crossOrigin: 'anonymous'
+                    }),
+                    gsi_pale: L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png', {
+                        attribution: '&copy; 国土地理院',
+                        maxNativeZoom: 18,
+                        maxZoom: 21,
+                        crossOrigin: 'anonymous'
+                    }),
+                    google_roadmap: L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+                        attribution: '&copy; Google',
+                        maxZoom: 21,
+                        crossOrigin: 'anonymous'
+                    }),
+                    google_satellite: L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+                        attribution: '&copy; Google',
+                        maxZoom: 21,
+                        crossOrigin: 'anonymous'
+                    })
+                };
+                return baseLayers;
+            }, []);
 
-            // 地図の初期化
+            // 地図の初期化 (マウント時に一度だけ実行)
             useEffect(() => {
+                const savedCenter = getInitialState(KEYS.CENTER, [35.681236, 139.767125]);
+                const savedZoom = parseFloat(localStorage.getItem(KEYS.ZOOM)) || 15;
+
                 const initialMap = L.map('map', {
-                    center: [35.681236, 139.767125], // 東京駅
-                    zoom: 15,
+                    center: savedCenter,
+                    zoom: savedZoom,
                     maxZoom: 21,
                     zoomSnap: 0.5,
                     zoomDelta: 0.5,
-                    wheelPxPerZoomLevel: 120,
-                    layers: [layers.gsi_std]
+                    wheelPxPerZoomLevel: 120
                 });
+                
+                // 初期レイヤー（地理院地図）を追加
+                layers.gsi_std.addTo(initialMap);
+
                 setMap(initialMap);
 
                 initialMap.on('click', (e) => {
                     setPoints(prev => [...prev, [e.latlng.lat, e.latlng.lng]]);
                 });
 
-                return () => initialMap.remove();
-            }, [layers]);
+                return () => {
+                    initialMap.remove();
+                };
+            }, [layers]); // 依存配列に layers を追加
 
-            // レイヤーの切り替え
+            // 状態の自動保存
+            useEffect(() => {
+                localStorage.setItem(KEYS.POINTS, JSON.stringify(points));
+            }, [points]);
+
+            useEffect(() => {
+                localStorage.setItem(KEYS.BASE_LAYER, baseLayer);
+            }, [baseLayer]);
+
+            useEffect(() => {
+                localStorage.setItem(KEYS.INTERVAL, JSON.stringify(interval));
+            }, [interval]);
+
+            useEffect(() => {
+                localStorage.setItem(KEYS.FONT_SIZE, JSON.stringify(fontSize));
+            }, [fontSize]);
+
+            useEffect(() => {
+                localStorage.setItem(KEYS.LAYOUT_MODE, layoutMode);
+            }, [layoutMode]);
+
+            useEffect(() => {
+                localStorage.setItem(KEYS.PANEL_OPEN, JSON.stringify(panelOpen));
+            }, [panelOpen]);
+
+            // カメラ位置・ズームの自動保存
             useEffect(() => {
                 if (!map) return;
-                Object.values(layers).forEach(layer => map.removeLayer(layer));
-                map.addLayer(layers[baseLayer]);
-            }, [map, baseLayer, layers]);
+                const saveMapState = () => {
+                    localStorage.setItem(KEYS.CENTER, JSON.stringify(map.getCenter()));
+                    localStorage.setItem(KEYS.ZOOM, map.getZoom().toString());
+                };
+                map.on('moveend', saveMapState);
+                return () => map.off('moveend', saveMapState);
+            }, [map]);
+
+            useEffect(() => {
+                if (!map) return;
+
+                // 全ての TileLayer / GridLayer を一旦削除
+                map.eachLayer(layer => {
+                    if (layer instanceof L.TileLayer || layer instanceof L.GridLayer) {
+                        map.removeLayer(layer);
+                    }
+                });
+                
+                // 選択されたレイヤーを追加
+                const selectedLayer = layers[baseLayer];
+                if (selectedLayer) {
+                    selectedLayer.addTo(map);
+                }
+            }, [map, baseLayer, layers]); // googleSessions は layers が依存しているため、layers の変化で十分
 
             // 描画物（パス、マーカー、ラベル）の管理
             const layersGroupRef = useRef(L.layerGroup());
@@ -375,7 +474,7 @@
 
                 // 3. 日付時刻
                 const now = new Date();
-                const dateStr = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
+                const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
 
                 try {
                     const mapContainer = map.getContainer();
@@ -384,8 +483,14 @@
                     canvas.width = mapRect.width;
                     canvas.height = mapRect.height;
                     const ctx = canvas.getContext('2d');
+                    
+                    // キャンバスを白で塗りつぶす (透明・暗い背景対策)
+                    ctx.fillStyle = "#ffffff";
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-                    // 4. タイルを描画
+                    // 4. 背景地図（タイル）を描画
+                    // 全てのレイヤーが CORS 対応タイル (mt1, 地理院等) を使用しているため
+                    // ブラウザの表示位置を基準にキャプチャすることでズレを防ぐ
                     const tiles = mapContainer.querySelectorAll('.leaflet-tile-loaded');
                     const tilePromises = [];
                     tiles.forEach(tile => {
@@ -394,8 +499,21 @@
                         const y = Math.round(tileRect.top - mapRect.top);
                         const w = Math.round(tileRect.width);
                         const h = Math.round(tileRect.height);
-                        // CORS対応: タイルを再読み込みしてcanvasに描画
+                        
                         const p = new Promise(resolve => {
+                            if (tile.complete && tile.naturalWidth !== 0) {
+                                try {
+                                    ctx.drawImage(tile, x, y, w, h);
+                                    resolve();
+                                    return;
+                                } catch (e) {
+                                    // 汚染されている場合は Image オブジェクトで再取得を試みる
+                                }
+                            }
+                            if (!tile.src || tile.src.includes('undefined')) {
+                                resolve();
+                                return;
+                            }
                             const img = new Image();
                             img.crossOrigin = 'anonymous';
                             img.onload = () => {
@@ -403,8 +521,7 @@
                                 resolve();
                             };
                             img.onerror = () => {
-                                // CORS失敗時は直接描画を試みる
-                                try { ctx.drawImage(tile, x, y, w, h); } catch(e) {}
+                                try { ctx.drawImage(tile, x, y, w, h); } catch (e) { }
                                 resolve();
                             };
                             img.src = tile.src;
@@ -480,12 +597,12 @@
                     // 8. ダウンロード
                     const safeName = addressStr.replace(/[\\/:*?"<>|]/g, '_').substring(0, 80);
                     const link = document.createElement('a');
-                    link.download = `${safeName}_${dateStr}.png`;
+                    link.download = `渋滞長地図_${safeName}_${dateStr}.png`;
                     link.href = canvas.toDataURL('image/png');
                     link.click();
 
                     // 通知を表示
-                    setNotification({ type: 'success', message: `保存しました: ${safeName}_${dateStr}.png` });
+                    setNotification({ type: 'success', message: `保存しました: 渋滞長地図_${safeName}_${dateStr}.png` });
                     setTimeout(() => setNotification(null), 3000);
                 } catch (e) {
                     console.error('スクリーンショットエラー:', e);
@@ -679,16 +796,14 @@
                             <div className="mt-4 text-[10px] text-gray-400 leading-tight">
                                 ※ 地図上をクリックしてパスを描画します。<br />
                                 ※ カメラアイコンから、計測地点の住所を含めたスクリーンショットを保存できます。<br />
-                                ※ Google Maps を利用するには index.html 内の API キー設定が必要です。
                             </div>
                         </div>
                     )}
 
                     {/* 通知表示 */}
                     {notification && (
-                        <div className={`absolute bottom-8 left-1/2 transform -translate-x-1/2 z-[2000] px-6 py-3 rounded-full shadow-2xl text-white font-bold transition-all duration-500 animate-bounce ${
-                            notification.type === 'success' ? 'bg-green-600/90' : 'bg-red-600/90'
-                        }`}>
+                        <div className={`absolute bottom-8 left-1/2 transform -translate-x-1/2 z-[2000] px-6 py-3 rounded-full shadow-2xl text-white font-bold transition-all duration-500 animate-bounce ${notification.type === 'success' ? 'bg-green-600/90' : 'bg-red-600/90'
+                            }`}>
                             <div className="flex items-center gap-2">
                                 {notification.type === 'success' ? (
                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
