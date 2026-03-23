@@ -550,10 +550,10 @@
                         measurement.markers.forEach(m => {
                             if (m.bearing !== undefined) {
                                 const angle = m.bearing + 90;
-                                let len = 0.001;
+                                let len = 0.002;
                                 let weight = 2;
                                 if (m.type === '100m') { len = 0.003; weight = 3; }
-                                else if (m.type === '50m') { len = 0.002; weight = 2.5; }
+                                else if (m.type === '50m') { len = 0.0025; weight = 2.5; }
 
                                 const center = turf.point([m.coords[1], m.coords[0]]);
                                 const p1 = turf.destination(center, len, angle, { units: 'kilometers' });
